@@ -237,9 +237,10 @@ jobs:
           key: windows-${{ hashFiles('source/**/*.gradle.kts', 'source/gradle/libs.versions.toml', 'source/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: windows-
 
+      # 注意：Windows runner 默认 PowerShell，环境变量需用 $env:VERSION（$VERSION 会展开为空）
       - name: Build EXE installer
         working-directory: source
-        run: ./gradlew.bat -Pversion="$VERSION" :composeApp:packageExe --no-daemon
+        run: ./gradlew.bat -Pversion="$env:VERSION" :composeApp:packageExe --no-daemon
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4

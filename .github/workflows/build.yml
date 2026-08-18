@@ -1,0 +1,341 @@
+# 构建源码仓库（Phylaris/FallingSound）最新版本的各平台构件，并发布到本仓库（FallingSoundRelease）的 Release
+#
+# 触发方式: 仅手动触发（workflow_dispatch），本仓库的 tag 推送不触发
+#
+# 执行逻辑:
+#   1. 从源码仓库 FallingSound 获取最新 Release 的 tag（无 Release 则取最新 tag，
+#      两者都没有则回退 main 分支 + 版本号 0.1.0-SNAPSHOT）
+#   2. 按该 tag 检出源码并构建 Android / iOS / Windows / Linux 构件
+#   3. build-ios-ipa.sh 位于源码仓库（FallingSound），checkout 后直接使用
+#   4. 版本号通过环境变量 VERSION 暴露，并以 -Pversion=<版本号> 传入 Gradle，
+#      同时通过 GRADLE_OPTS=-Dorg.gradle.project.version=<版本号> 覆盖 xcodebuild
+#      子进程的 gradlew 调用；源码侧可用
+#      providers.gradleProperty("version").getOrElse("0.1.0-SNAPSHOT") 读取
+#   5. 以源码版本号发布到本仓库 Release
+#
+# 前置条件:
+#   1. 本仓库 Settings → Secrets and variables → Actions → 新建仓库密钥 GH_PAT
+#      值为有 FallingSound 仓库读取权限的 Personal Access Token
+#   2. 本仓库 Settings → Actions → General → Workflow permissions
+#      设为 "Read and write permissions"（GITHUB_TOKEN 才能创建 Release）
+
+name: Build FallingSound & Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  SOURCE_REPO: Phylaris/FallingSound      # 源码所在私有仓库
+
+jobs:
+  resolve-version:
+    name: Resolve source version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: Get latest release or tag from source repo
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+        run: |
+          TAG=""
+          VERSION=""
+          # 优先取最新 Release 的 tag
+          TAG=$(gh release view --repo "${{ env.SOURCE_REPO }}" --json tagName --jq .tagName 2>/dev/null || true)
+          # 无 Release 时取最新 tag
+          if [ -z "$TAG" ]; then
+            TAG=$(gh api "repos/${{ env.SOURCE_REPO }}/tags" --jq '.[0].name' 2>/dev/null || true)
+          fi
+          # 两者都没有则回退默认分支，版本号与源码侧默认值保持一致
+          if [ -z "$TAG" ]; then
+            TAG="main"
+            VERSION="0.1.0-SNAPSHOT"
+          else
+            VERSION="${TAG#v}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+  android:
+    name: Android APK
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+      GRADLE_OPTS: -Dorg.gradle.project.version=${{ needs.resolve-version.outputs.version }}
+    steps:
+      - name: Checkout source repo at resolved version
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ needs.resolve-version.outputs.tag }}
+          token: ${{ secrets.GH_PAT }}
+          path: source
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: android-${{ hashFiles('source/**/*.gradle.kts', 'source/gradle/libs.versions.toml', 'source/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: android-
+
+      - name: Use official Gradle distribution (CI)
+        working-directory: source
+        shell: bash
+        run: >
+          sed -i
+          's|mirrors.cloud.tencent.com/gradle/gradle-8.14.4-all.zip|services.gradle.org/distributions/gradle-8.14.4-all.zip|'
+          gradle/wrapper/gradle-wrapper.properties
+
+      # 签名配置通过 Gradle init script（-I 参数）注入，不修改源码仓库的构建脚本；
+      # 凭据来自本仓库 Secrets，未配置时构建未签名 APK（keystore 复用源码仓库根目录 see.jks）
+      - name: Build release APK (signed if secrets configured)
+        working-directory: source
+        shell: bash
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          cat > signing.init.gradle <<'EOF'
+          allprojects { p ->
+              p.plugins.withId("com.android.application") {
+                  def storePass = System.getenv("KEYSTORE_PASSWORD")
+                  def alias = System.getenv("KEY_ALIAS")
+                  def keyPass = System.getenv("KEY_PASSWORD")
+                  if (storePass && alias && keyPass) {
+                      p.android {
+                          signingConfigs {
+                              release {
+                                  storeFile p.file("see.jks")
+                                  storePassword storePass
+                                  keyAlias alias
+                                  keyPassword keyPass
+                              }
+                          }
+                          buildTypes {
+                              release {
+                                  signingConfig signingConfigs.getByName("release")
+                              }
+                          }
+                      }
+                  } else {
+                      logger.lifecycle("签名凭据未配置，本次构建未签名 APK")
+                  }
+              }
+          }
+          EOF
+          ./gradlew -I signing.init.gradle -Pversion="$VERSION" :composeApp:assembleRelease --no-daemon
+
+      - name: Run desktop unit & UI tests
+        working-directory: source
+        run: ./gradlew -Pversion="$VERSION" :composeApp:desktopTest --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: source/composeApp/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
+  ios-ipa:
+    name: iOS IPA (unsigned)
+    needs: resolve-version
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+      # xcodebuild 阶段会内部调用 ./gradlew :composeApp:embedAndSignAppleFrameworkForXcode，
+      # 无法追加命令行参数，通过 GRADLE_OPTS 系统属性把版本号注入 Gradle project property
+      GRADLE_OPTS: -Dorg.gradle.project.version=${{ needs.resolve-version.outputs.version }}
+    steps:
+      - name: Checkout source repo at resolved version
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ needs.resolve-version.outputs.tag }}
+          token: ${{ secrets.GH_PAT }}
+          path: source
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache Gradle & Konan
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.konan
+          key: ios-${{ hashFiles('source/**/*.gradle.kts', 'source/gradle/libs.versions.toml', 'source/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: ios-
+
+      - name: Use official Gradle distribution (CI)
+        working-directory: source
+        shell: bash
+        run: >
+          sed -i
+          's|mirrors.cloud.tencent.com/gradle/gradle-8.14.4-all.zip|services.gradle.org/distributions/gradle-8.14.4-all.zip|'
+          gradle/wrapper/gradle-wrapper.properties
+
+      - name: Build unsigned IPA
+        working-directory: source
+        run: |
+          chmod +x build-ios-ipa.sh
+          ./build-ios-ipa.sh Release
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-ipa
+          path: source/FallKmp.ipa
+          if-no-files-found: error
+
+  windows:
+    name: Windows EXE
+    needs: resolve-version
+    runs-on: windows-latest
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+      GRADLE_OPTS: -Dorg.gradle.project.version=${{ needs.resolve-version.outputs.version }}
+    steps:
+      - name: Checkout source repo at resolved version
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ needs.resolve-version.outputs.tag }}
+          token: ${{ secrets.GH_PAT }}
+          path: source
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: windows-${{ hashFiles('source/**/*.gradle.kts', 'source/gradle/libs.versions.toml', 'source/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: windows-
+
+      - name: Use official Gradle distribution (CI)
+        working-directory: source
+        shell: bash
+        run: >
+          sed -i
+          's|mirrors.cloud.tencent.com/gradle/gradle-8.14.4-all.zip|services.gradle.org/distributions/gradle-8.14.4-all.zip|'
+          gradle/wrapper/gradle-wrapper.properties
+
+      - name: Build EXE installer
+        working-directory: source
+        run: ./gradlew.bat -Pversion="$VERSION" :composeApp:packageExe --no-daemon
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: source/composeApp/build/compose/binaries/main/exe/*.exe
+          if-no-files-found: error
+
+  linux:
+    name: Linux DEB
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+      GRADLE_OPTS: -Dorg.gradle.project.version=${{ needs.resolve-version.outputs.version }}
+    steps:
+      - name: Checkout source repo at resolved version
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ needs.resolve-version.outputs.tag }}
+          token: ${{ secrets.GH_PAT }}
+          path: source
+
+      - name: Install fakeroot
+        run: sudo apt-get update && sudo apt-get install -y fakeroot
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: linux-${{ hashFiles('source/**/*.gradle.kts', 'source/gradle/libs.versions.toml', 'source/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: linux-
+
+      - name: Use official Gradle distribution (CI)
+        working-directory: source
+        shell: bash
+        run: >
+          sed -i
+          's|mirrors.cloud.tencent.com/gradle/gradle-8.14.4-all.zip|services.gradle.org/distributions/gradle-8.14.4-all.zip|'
+          gradle/wrapper/gradle-wrapper.properties
+
+      - name: Build DEB installer
+        working-directory: source
+        run: ./gradlew -Pversion="$VERSION" :composeApp:packageDeb --no-daemon
+
+      - name: Upload DEB
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: source/composeApp/build/compose/binaries/main/deb/*.deb
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [resolve-version, android, ios-ipa, windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Publish release on this repo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd release-artifacts
+          TAG="${{ needs.resolve-version.outputs.tag }}"
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+          if [ "$TAG" = "main" ]; then
+            echo "源码仓库无 Release/tag，本次仅构建（版本 ${VERSION}），跳过发布"
+            exit 0
+          fi
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，跳过发布"
+          else
+            gh release create "$TAG" ./* \
+              --title "FallingSound $VERSION" \
+              --generate-notes \
+              --repo "${{ github.repository }}"
+          fi

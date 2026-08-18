@@ -121,7 +121,7 @@ jobs:
                   def storePass = System.getenv("KEYSTORE_PASSWORD")
                   def alias = System.getenv("KEY_ALIAS")
                   def keyPass = System.getenv("KEY_PASSWORD")
-                  # p.file() 相对 composeApp 项目目录解析，必须用 rootProject 定位仓库根目录的 keystore
+                  // p.file() 相对 composeApp 项目目录解析，必须用 rootProject 定位仓库根目录的 keystore
                   def ksFile = p.rootProject.file(System.getenv("KEYSTORE_PATH") ?: "see.jks")
                   if (storePass && alias && keyPass && ksFile.exists()) {
                       p.android {

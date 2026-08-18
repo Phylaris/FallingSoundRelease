@@ -92,14 +92,6 @@ jobs:
           key: android-${{ hashFiles('source/**/*.gradle.kts', 'source/gradle/libs.versions.toml', 'source/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: android-
 
-      - name: Use official Gradle distribution (CI)
-        working-directory: source
-        shell: bash
-        run: >
-          sed -i
-          's|mirrors.cloud.tencent.com/gradle/gradle-8.14.4-all.zip|services.gradle.org/distributions/gradle-8.14.4-all.zip|'
-          gradle/wrapper/gradle-wrapper.properties
-
       # 签名配置通过 Gradle init script（-I 参数）注入，不修改源码仓库的构建脚本；
       # keystore 不存入源码仓库，由 KEYSTORE_BASE64 secret 解码生成（更安全），
       # 凭据齐全且 keystore 可用时才签名，否则构建未签名 APK
@@ -200,14 +192,6 @@ jobs:
           key: ios-${{ hashFiles('source/**/*.gradle.kts', 'source/gradle/libs.versions.toml', 'source/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: ios-
 
-      - name: Use official Gradle distribution (CI)
-        working-directory: source
-        shell: bash
-        run: >
-          sed -i
-          's|mirrors.cloud.tencent.com/gradle/gradle-8.14.4-all.zip|services.gradle.org/distributions/gradle-8.14.4-all.zip|'
-          gradle/wrapper/gradle-wrapper.properties
-
       - name: Build unsigned IPA
         working-directory: source
         run: |
@@ -251,14 +235,6 @@ jobs:
             ~/.gradle/wrapper
           key: windows-${{ hashFiles('source/**/*.gradle.kts', 'source/gradle/libs.versions.toml', 'source/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: windows-
-
-      - name: Use official Gradle distribution (CI)
-        working-directory: source
-        shell: bash
-        run: >
-          sed -i
-          's|mirrors.cloud.tencent.com/gradle/gradle-8.14.4-all.zip|services.gradle.org/distributions/gradle-8.14.4-all.zip|'
-          gradle/wrapper/gradle-wrapper.properties
 
       - name: Build EXE installer
         working-directory: source
@@ -304,14 +280,6 @@ jobs:
             ~/.gradle/wrapper
           key: linux-${{ hashFiles('source/**/*.gradle.kts', 'source/gradle/libs.versions.toml', 'source/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: linux-
-
-      - name: Use official Gradle distribution (CI)
-        working-directory: source
-        shell: bash
-        run: >
-          sed -i
-          's|mirrors.cloud.tencent.com/gradle/gradle-8.14.4-all.zip|services.gradle.org/distributions/gradle-8.14.4-all.zip|'
-          gradle/wrapper/gradle-wrapper.properties
 
       - name: Build DEB installer
         working-directory: source

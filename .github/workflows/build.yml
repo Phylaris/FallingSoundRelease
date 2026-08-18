@@ -285,7 +285,12 @@ jobs:
 
       - name: Build DEB installer
         working-directory: source
-        run: ./gradlew -Pversion="$VERSION" :composeApp:packageDeb --no-daemon
+        run: |
+          ./gradlew -Pversion="$VERSION" :composeApp:packageDeb --no-daemon || {
+            echo "===== jpackage stderr 日志 ====="
+            cat composeApp/build/compose/logs/packageDeb/*-err.txt 2>/dev/null || true
+            exit 1
+          }
 
       - name: Upload DEB
         uses: actions/upload-artifact@v4

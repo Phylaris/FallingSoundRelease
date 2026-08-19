@@ -323,6 +323,32 @@ jobs:
         working-directory: source
         run: ./gradlew -Pversion="$VERSION" :composeApp:packageDmg --no-daemon
 
+      - name: Print jpackage logs on failure
+        if: failure()
+        shell: bash
+        working-directory: source
+        run: |
+          echo "===== createDistributable/packageDmg args ====="
+          cat composeApp/build/compose/tmp/createDistributable.args.txt 2>/dev/null || true
+          cat composeApp/build/compose/tmp/packageDmg.args.txt 2>/dev/null || true
+          echo "===== jpackage 日志 ====="
+          cat composeApp/build/compose/logs/createDistributable/*-err.txt 2>/dev/null || true
+          cat composeApp/build/compose/logs/createDistributable/*-out.txt 2>/dev/null || true
+          cat composeApp/build/compose/logs/packageDmg/*-err.txt 2>/dev/null || true
+          cat composeApp/build/compose/logs/packageDmg/*-out.txt 2>/dev/null || true
+
+      - name: Upload jpackage logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-jpackage-logs
+          path: |
+            source/composeApp/build/compose/logs/createDistributable/
+            source/composeApp/build/compose/logs/packageDmg/
+            source/composeApp/build/compose/tmp/createDistributable.args.txt
+            source/composeApp/build/compose/tmp/packageDmg.args.txt
+          if-no-files-found: warn
+
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:

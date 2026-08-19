@@ -245,17 +245,34 @@ jobs:
           Get-ChildItem "$env:USERPROFILE\.gradle\compose-jb" -ErrorAction SilentlyContinue | Select-Object Name, Length
 
       # 注意：Windows runner 默认 PowerShell，环境变量需用 $env:VERSION（$VERSION 会展开为空）
+      # 注意：不能使用 cmd 风格 || { ... } 失败处理（PowerShell 7 下 script block 不会执行，只会回显文本），
+      #       失败日志改由下方 if: failure() 独立步骤打印并上传 artifact
       - name: Build EXE installer
         working-directory: source
+        run: ./gradlew.bat -Pversion="$env:VERSION" :composeApp:packageExe --no-daemon
+
+      - name: Print jpackage logs on failure
+        if: failure()
+        shell: pwsh
+        working-directory: source
         run: |
-          ./gradlew.bat -Pversion="$env:VERSION" :composeApp:packageExe --no-daemon || {
-            Write-Host "===== jpackage 日志 ====="
-            Get-ChildItem composeApp/build/compose/logs/packageExe/*-err.txt, composeApp/build/compose/logs/packageExe/*-out.txt -ErrorAction SilentlyContinue | ForEach-Object {
-              Write-Host "----- $($_.Name) -----"
-              Get-Content $_.FullName
-            }
-            exit 1
+          Write-Host "===== jpackage args.txt ====="
+          Get-Content composeApp/build/compose/tmp/packageExe.args.txt -ErrorAction SilentlyContinue
+          Write-Host "===== jpackage 日志 ====="
+          Get-ChildItem composeApp/build/compose/logs/packageExe/*-err.txt, composeApp/build/compose/logs/packageExe/*-out.txt -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "----- $($_.Name) -----"
+            Get-Content $_.FullName
           }
+
+      - name: Upload jpackage logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jpackage-logs
+          path: |
+            source/composeApp/build/compose/logs/packageExe/
+            source/composeApp/build/compose/tmp/packageExe.args.txt
+          if-no-files-found: warn
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4

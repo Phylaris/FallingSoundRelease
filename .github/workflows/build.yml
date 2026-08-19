@@ -282,9 +282,16 @@ jobs:
           if-no-files-found: error
 
   dmg:
-    name: macOS DMG
+    name: macOS DMG (${{ matrix.arch }})
     needs: resolve-version
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+          - arch: x64
+            runner: macos-13
+    runs-on: ${{ matrix.runner }}
     env:
       VERSION: ${{ needs.resolve-version.outputs.version }}
     steps:
@@ -308,8 +315,8 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: macos-${{ hashFiles('source/**/*.gradle.kts', 'source/gradle/libs.versions.toml', 'source/gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: macos-
+          key: macos-${{ matrix.arch }}-${{ hashFiles('source/**/*.gradle.kts', 'source/gradle/libs.versions.toml', 'source/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: macos-${{ matrix.arch }}-
 
       # 未配置开发者证书时 jpackage 生成未签名 DMG（与 iOS 未签名 IPA 同理）
       - name: Build DMG
@@ -319,7 +326,7 @@ jobs:
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
-          name: macos-dmg
+          name: macos-dmg-${{ matrix.arch }}
           path: source/composeApp/build/compose/binaries/main/dmg/*.dmg
           if-no-files-found: error
 

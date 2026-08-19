@@ -11,7 +11,8 @@
 #      同时通过 GRADLE_OPTS=-Dorg.gradle.project.version=<版本号> 覆盖 xcodebuild
 #      子进程的 gradlew 调用；源码侧可用
 #      providers.gradleProperty("version").getOrElse("0.1.0-SNAPSHOT") 读取
-#   5. 以源码版本号发布到本仓库 Release
+#   5. 先按源码版本号在本仓库创建 Release（已存在则跳过；源码仓库无 Release/tag 时不创建）
+#   6. 各平台构建完成后立即将构件上传到本仓库 Release，无需等待其他平台
 #
 # 前置条件:
 #   1. 本仓库 Settings → Secrets and variables → Actions → 新建仓库密钥 GH_PAT
@@ -61,9 +62,35 @@ jobs:
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
+  create-release:
+    name: Create GitHub Release
+    needs: resolve-version
+    runs-on: ubuntu-latest
+    steps:
+      # 先行创建 Release（发布到本仓库，幂等：已存在则跳过）；
+      # 源码仓库无 Release/tag（TAG=main）时不创建，仅空跑保证依赖它的构建 job 不被 skip
+      - name: Create release on this repo if not exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ needs.resolve-version.outputs.tag }}"
+          VERSION="${{ needs.resolve-version.outputs.version }}"
+          if [ "$TAG" = "main" ]; then
+            echo "源码仓库无 Release/tag，本次仅构建（版本 ${VERSION}），不创建 Release"
+            exit 0
+          fi
+          if gh release view "$TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release $TAG 已存在，跳过创建"
+          else
+            gh release create "$TAG" \
+              --title "FallingSound $VERSION" \
+              --generate-notes \
+              --repo "${{ github.repository }}"
+          fi
+
   android:
     name: Android APK
-    needs: resolve-version
+    needs: [resolve-version, create-release]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.resolve-version.outputs.version }}
@@ -154,9 +181,19 @@ jobs:
           path: source/composeApp/build/outputs/apk/release/*.apk
           if-no-files-found: error
 
+      - name: Upload APK to GitHub Release
+        if: needs.resolve-version.outputs.tag != 'main'
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.resolve-version.outputs.tag }}" \
+            composeApp/build/outputs/apk/release/*.apk \
+            --repo "${{ github.repository }}" --clobber
+
   ios-ipa:
     name: iOS IPA (unsigned)
-    needs: resolve-version
+    needs: [resolve-version, create-release]
     runs-on: macos-latest
     env:
       # xcodebuild 阶段会内部调用 ./gradlew :composeApp:embedAndSignAppleFrameworkForXcode，
@@ -200,9 +237,19 @@ jobs:
           path: source/FallKmp.ipa
           if-no-files-found: error
 
+      - name: Upload IPA to GitHub Release
+        if: needs.resolve-version.outputs.tag != 'main'
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.resolve-version.outputs.tag }}" \
+            FallKmp.ipa \
+            --repo "${{ github.repository }}" --clobber
+
   windows:
     name: Windows EXE
-    needs: resolve-version
+    needs: [resolve-version, create-release]
     runs-on: windows-latest
     env:
       VERSION: ${{ needs.resolve-version.outputs.version }}
@@ -281,9 +328,21 @@ jobs:
           path: source/composeApp/build/compose/binaries/main/exe/*.exe
           if-no-files-found: error
 
+      # Windows runner 默认 PowerShell 不展开 glob，上传步骤显式用 bash
+      - name: Upload EXE to GitHub Release
+        if: needs.resolve-version.outputs.tag != 'main'
+        shell: bash
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ needs.resolve-version.outputs.tag }}" \
+            composeApp/build/compose/binaries/main/exe/*.exe \
+            --repo "${{ github.repository }}" --clobber
+
   dmg:
     name: macOS DMG (${{ matrix.arch }})
-    needs: resolve-version
+    needs: [resolve-version, create-release]
     strategy:
       matrix:
         include:
@@ -356,9 +415,21 @@ jobs:
           path: source/composeApp/build/compose/binaries/main/dmg/*.dmg
           if-no-files-found: error
 
+      # 两架构生成的 dmg 同名，上传前重命名加入架构后缀避免冲突
+      - name: Upload DMG to GitHub Release
+        if: needs.resolve-version.outputs.tag != 'main'
+        working-directory: source/composeApp/build/compose/binaries/main/dmg
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DMG=$(ls *.dmg | head -n 1)
+          mv "$DMG" "FallingSound-${{ needs.resolve-version.outputs.version }}-macos-${{ matrix.arch }}.dmg"
+          gh release upload "${{ needs.resolve-version.outputs.tag }}" ./*.dmg \
+            --repo "${{ github.repository }}" --clobber
+
   linux:
     name: Linux DEB
-    needs: resolve-version
+    needs: [resolve-version, create-release]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.resolve-version.outputs.version }}
@@ -402,33 +473,12 @@ jobs:
           path: source/composeApp/build/compose/binaries/main/deb/*.deb
           if-no-files-found: error
 
-  release:
-    name: Publish GitHub Release
-    needs: [resolve-version, android, ios-ipa, windows, dmg, linux]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: release-artifacts
-          merge-multiple: true
-
-      - name: Publish release on this repo
+      - name: Upload DEB to GitHub Release
+        if: needs.resolve-version.outputs.tag != 'main'
+        working-directory: source
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cd release-artifacts
-          TAG="${{ needs.resolve-version.outputs.tag }}"
-          VERSION="${{ needs.resolve-version.outputs.version }}"
-          if [ "$TAG" = "main" ]; then
-            echo "源码仓库无 Release/tag，本次仅构建（版本 ${VERSION}），跳过发布"
-            exit 0
-          fi
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "Release $TAG 已存在，跳过发布"
-          else
-            gh release create "$TAG" ./* \
-              --title "FallingSound $VERSION" \
-              --generate-notes \
-              --repo "${{ github.repository }}"
-          fi
+          gh release upload "${{ needs.resolve-version.outputs.tag }}" \
+            composeApp/build/compose/binaries/main/deb/*.deb \
+            --repo "${{ github.repository }}" --clobber

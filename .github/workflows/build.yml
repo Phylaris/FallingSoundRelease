@@ -5,7 +5,7 @@
 # 执行逻辑:
 #   1. 从源码仓库 FallingSound 获取最新 Release 的 tag（无 Release 则取最新 tag，
 #      两者都没有则回退 main 分支 + 版本号 0.1.0-SNAPSHOT）
-#   2. 按该 tag 检出源码并构建 Android / iOS / Windows / Linux 构件
+#   2. 按该 tag 检出源码并构建 Android / iOS / macOS / Windows / Linux 构件
 #   3. build-ios-ipa.sh 位于源码仓库（FallingSound），checkout 后直接使用
 #   4. 版本号通过环境变量 VERSION 暴露，并以 -Pversion=<版本号> 传入 Gradle，
 #      同时通过 GRADLE_OPTS=-Dorg.gradle.project.version=<版本号> 覆盖 xcodebuild
@@ -281,6 +281,48 @@ jobs:
           path: source/composeApp/build/compose/binaries/main/exe/*.exe
           if-no-files-found: error
 
+  dmg:
+    name: macOS DMG
+    needs: resolve-version
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.resolve-version.outputs.version }}
+    steps:
+      - name: Checkout source repo at resolved version
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.SOURCE_REPO }}
+          ref: ${{ needs.resolve-version.outputs.tag }}
+          token: ${{ secrets.GH_PAT }}
+          path: source
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: macos-${{ hashFiles('source/**/*.gradle.kts', 'source/gradle/libs.versions.toml', 'source/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: macos-
+
+      # 未配置开发者证书时 jpackage 生成未签名 DMG（与 iOS 未签名 IPA 同理）
+      - name: Build DMG
+        working-directory: source
+        run: ./gradlew -Pversion="$VERSION" :composeApp:packageDmg --no-daemon
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-dmg
+          path: source/composeApp/build/compose/binaries/main/dmg/*.dmg
+          if-no-files-found: error
+
   linux:
     name: Linux DEB
     needs: resolve-version
@@ -332,7 +374,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [resolve-version, android, ios-ipa, windows, linux]
+    needs: [resolve-version, android, ios-ipa, windows, dmg, linux]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts

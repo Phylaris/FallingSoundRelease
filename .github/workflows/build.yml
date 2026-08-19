@@ -230,10 +230,32 @@ jobs:
           key: windows-${{ hashFiles('source/**/*.gradle.kts', 'source/gradle/libs.versions.toml', 'source/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: windows-
 
+      - name: Verify WiX environment
+        shell: pwsh
+        run: |
+          Write-Host "===== PATH 中的 WiX 工具 ====="
+          $candle = Get-Command candle.exe -ErrorAction SilentlyContinue
+          if ($candle) {
+            Write-Host "candle: $($candle.Source)"
+            & $candle.Source -? 2>&1 | Select-Object -First 3
+          } else {
+            Write-Host "PATH 中未找到 candle.exe"
+          }
+          Write-Host "===== ~/.gradle/compose-jb 缓存 ====="
+          Get-ChildItem "$env:USERPROFILE\.gradle\compose-jb" -ErrorAction SilentlyContinue | Select-Object Name, Length
+
       # 注意：Windows runner 默认 PowerShell，环境变量需用 $env:VERSION（$VERSION 会展开为空）
       - name: Build EXE installer
         working-directory: source
-        run: ./gradlew.bat -Pversion="$env:VERSION" :composeApp:packageExe --no-daemon
+        run: |
+          ./gradlew.bat -Pversion="$env:VERSION" :composeApp:packageExe --no-daemon || {
+            Write-Host "===== jpackage 日志 ====="
+            Get-ChildItem composeApp/build/compose/logs/packageExe/*-err.txt, composeApp/build/compose/logs/packageExe/*-out.txt -ErrorAction SilentlyContinue | ForEach-Object {
+              Write-Host "----- $($_.Name) -----"
+              Get-Content $_.FullName
+            }
+            exit 1
+          }
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
